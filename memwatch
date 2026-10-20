@@ -177,14 +177,31 @@ while true; do
   out+="$chartS"$'\n'
   out+=" ${C_DIM}last ${winsec}s · 2s/sample · load ${la}${R}"$'\n'
   out+=" ${C_DIM}pressure = free % (green ≥25 · amber 10–25 · red <10) · swap = used % · MW_ASCII=1 = font fallback${R}"$'\n'$'\n'
-  out+=" ${C_DIM}${BL}TOP RSS${R}"$'\n'
+
+  # TOP: fill remaining screen with top-N processes by phys_footprint (total),
+  # showing RSS alongside. footprint = Activity Monitor's Memory column —
+  # catches big-foots whose RSS lies (e.g. GPU/wired dirty pages in swap).
+  TOP_N=$((LINES - 10 - P_ROWS - S_ROWS)); ((TOP_N < 5)) && TOP_N=5
+
+  typeset -A PRSS PNAME
+  PRSS=() PNAME=()
+  while IFS='|' read -r pid rss nm; do
+    [[ -z "$pid" ]] && continue
+    PRSS[$pid]=$rss; PNAME[$pid]=$nm
+  done <<< "$(ps axo pid=,rss=,comm= 2>/dev/null | awk '{pid=$1;rss=$2;n=$0;sub(/^[^ ]+ +[^ ]+ +/,"",n); sub(/^.*\//,"",n); sub(/^-/,"",n); if(length(n)>34)n=substr(n,1,34); printf "%s|%s|%s\n",pid,rss,n}')"
+
+  out+=" ${C_DIM}${BL}TOP PROCESSES${R} ${C_DIM}RSS / total footprint${R}"$'\n'
+  out+=" ${C_DIM}  #    RSS  TOTAL${R}"$'\n'
 
   i=1
-  while IFS='|' read -r sz nm; do
-    [[ -z "$sz" ]] && continue
-    out+=" $(printf '%2d' $i) ${C_DIM}$(printf '%6s' $sz)${R}  ${C_TXT}${nm}${R}"$'\n'
-    i=$((i + 1))
-  done <<< "$(ps axo rss=,comm= 2>/dev/null | sort -rn | head -5 | awk '{r=$1;n=$0;sub(/^[^ ]+ +/,"",n); sub(/^.*\//,"",n); sub(/^-/,"",n); if(length(n)>34)n=substr(n,1,34); if(r+0>1048576)printf "%.1fG|%s\n",r/1048576,n; else printf "%.0fM|%s\n",r/1024,n}')"
+  while IFS=' ' read -r pid tot; do
+    [[ -z "$pid" ]] && continue
+    nm=${PNAME[$pid]:-}; [[ -z "$nm" ]] && continue
+    r=${PRSS[$pid]:-0}
+    if (( r > 1048576 )); then rs=$(printf '%.1fG' $((r / 1048576.0))); else rs=$(printf '%.0fM' $((r / 1024.0))); fi
+    out+=" $(printf '%2d' $i) ${C_DIM}$(printf '%6s' $rs)${R} ${C_ACC}$(printf '%6s' $tot)${R}  ${C_TXT}${nm}${R}"$'\n'
+    i=$((i + 1)); ((i > TOP_N)) && break
+  done <<< "$(top -l 1 -o mem -n 40 -stats pid,mem 2>/dev/null | awk '/^PID/{f=1;next} f && NF>=2 && $1 ~ /^[0-9]+$/ {print $1, $2}')"
 
   printf '%s' "$out"
   sleep $INTERVAL
