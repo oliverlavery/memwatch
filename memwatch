@@ -32,8 +32,8 @@ typeset -a BRAILLE
 for ((b = 0; b < 256; b++)); do
   eval "BRAILLE[b+1]=\$'\\xe2\\x$(printf %02x $((0xa0 | b >> 6)))\\x$(printf %02x $((0x80 | b & 0x3f)))'"
 done
-# dot columns per band row, top→bottom: left dots (1,2,3,7), right (4,5,6,8)
-LBIT=(1 2 4 64); RBIT=(8 16 32 128); PAIR=(9 18 36 192)
+# dot columns per band row k=1..4 BOTTOM→TOP: left dots (7,3,2,1), right (8,6,5,4)
+LBIT=(64 4 2 1); RBIT=(128 32 16 8); PAIR=(192 36 18 9)
 
 # value ramps: index = v/10 (0..10). pressure plots free %, swap used %.
 RP_RAW=(196 196 202 208 214 220 190 118 82 46 46)
@@ -73,7 +73,7 @@ rep() { REP=""; local i; for ((i = 0; i < $2; i++)); do REP+=$1; done }
 framed() { # $1 = multi-line chart content -> FRAMED (dim rail on every line)
   FRAMED=""
   local row
-  while IFS= read -r row; do FRAMED+="${C_DIM}│${R}${row}"$'\n'; done <<< "$1"
+  while IFS= read -r row; do FRAMED+=" ${C_DIM}│${R}${row}"$'\n'; done <<< "$1"
 }
 
 bar() { # $1 fill% (0-100), $2=value, $3=mode, $4=len -> global BARSTR
@@ -179,6 +179,24 @@ while true; do
   histP+=($pf); histS+=($sf)
   while (( ${#histP} > chartw )); do histP=(${histP[2,-1]}); histS=(${histS[2,-1]}); done
 
+  # display EMA (light smoothing for the CHARTS only; gauge/min/max/avg stay
+  # raw). kernel free-memory jitter sawtooths between samples — even a
+  # correct plot looks like chaos without it. MW_SMOOTH=0 disables.
+  if [[ "$MW_SMOOTH" != 0 ]]; then
+    shP=(); prev=-1
+    for v in "${(@)histP}"; do
+      (( prev < 0 )) && shP+=($v) || shP+=($(( (v + prev) / 2 )))
+      prev=${shP[-1]}
+    done
+    shS=(); prev=-1
+    for v in "${(@)histS}"; do
+      (( prev < 0 )) && shS+=($v) || shS+=($(( (v + prev) / 2 )))
+      prev=${shS[-1]}
+    done
+  else
+    shP=("${(@)histP}"); shS=("${(@)histS}")
+  fi
+
   mn=100 mx=0 sm=0 c=0
   for v in "${(@)histP}"; do ((v<mn))&&mn=$v; ((v>mx))&&mx=$v; sm=$((sm+v)); c=$((c+1)); done
   av=$(( c > 0 ? sm / c : 50 ))
@@ -198,16 +216,16 @@ while true; do
   ((LINES < 18)) && { P_ROWS=2; S_ROWS=1 }
 
   if [[ "$MW_ASCII" == 1 ]]; then
-    sparkline histP P "$chartw"; chartP=${CHART%$'\n'}
-    sparkline histS S "$chartw"; chartS=${CHART%$'\n'}
+    sparkline shP P "$chartw"; chartP=${CHART%$'\n'}
+    sparkline shS S "$chartw"; chartS=${CHART%$'\n'}
   else
-    chart histP P "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
-    chart histS S "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
+    chart shP P "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
+    chart shS S "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
   fi
 
   rl=$((COLS - 12 - ${#now} - 2)); ((rl < 0)) && rl=0
   rep '─' $rl; RULE=$REP
-  rep '─' $((chartw - 1)); HRULE=$REP
+  rep '─' $chartw; HRULE=$REP
 
   out=$'\e[H\e[2J'
   out+=" ${C_ACC}${BL}◆ MEMORY${R} ${C_DIM}${RULE}${R} ${now}"$'\n'$'\n'
@@ -226,7 +244,7 @@ while true; do
     out+=" ${C_DIM}╰${HRULE}${R}"$'\n'
   fi
   out+=" ${C_DIM}last ${winsec}s · 2s/sample · load ${la}${R}"$'\n'
-  out+=" ${C_DIM}pressure = free % · swap = used % · 256-colour ramps · MW_ASCII=1 = font fallback${R}"$'\n'$'\n'
+  out+=" ${C_DIM}pressure = free % · swap = used % · MW_ASCII=1 = ascii${R}"$'\n'$'\n'
 
   # TOP: fill remaining screen with top-N processes by phys_footprint (total),
   # showing RSS alongside. footprint = Activity Monitor's Memory column —
@@ -253,6 +271,8 @@ while true; do
     i=$((i + 1)); ((i > TOP_N)) && break
   done <<< "$(top -l 1 -o mem -n 40 -stats pid,mem 2>/dev/null | awk '/^PID/{f=1;next} f && NF>=2 && $1 ~ /^[0-9]+$/ {print $1, $2}')"
 
-  printf '%s' "$out"
+  # never end with a newline: writing LINES complete lines in an LINES-row
+  # pane scrolls the title off (this ate the header at phone widths)
+  printf '%s' "${out%$'\n'}"
   sleep $INTERVAL
 done
