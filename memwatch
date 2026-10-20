@@ -1,0 +1,191 @@
+#!/bin/zsh
+# memwatch v4 — btop-style braille memory monitor (Shadow, 2026-10-20)
+#
+#   v4 changes:
+#   - Braille (U+2800–U+28FF) is back, emitted as RAW UTF-8 BYTES, never
+#     \uXXXX escapes. Root cause of the v2 "renders as ?" bug: zsh printf
+#     "\uXXXX" fails with "character not in range" under a non-UTF-8 locale
+#     (LC_CTYPE=C) — the glyphs were being mangled at generation time, not
+#     by the phone font. btop proves Blink renders braille fine.
+#   - Multi-row btop-style charts: pressure 4 rows, swap 2 rows (auto-shrinks
+#     on short terminals). Per-column tier colouring, SGR only between runs.
+#   - Gauges aligned: labels %-9s, values %-11s, bars start at the same
+#     column regardless of label/value length.
+#   - btop-ish palette: cyan accent, dim rules, tier-coloured bars.
+#   - MW_ASCII=1 → v3-style ASCII sparkline fallback (for font-less terminals)
+#   - MW_COLS=n → force width. Width otherwise from stty (tput lies).
+
+INTERVAL=2
+
+typeset -a histP histS
+histP=() histS=()
+
+R=$'\e[0m'; BL=$'\e[1m'
+C_DIM=$'\e[38;5;243m'; C_TXT=$'\e[38;5;252m'; C_ACC=$'\e[38;5;51m'
+C_G=$'\e[38;5;46m'; C_Y=$'\e[38;5;220m'; C_R=$'\e[38;5;196m'
+C_BARBG=$'\e[38;5;238m'
+SKCH=('.' '.' ':' '-' '=' '+' '*' '#')   # ASCII fallback ramp
+
+# locale-proof braille table: BRAILLE[bits+1] = raw UTF-8 bytes of U+2800+bits
+typeset -a BRAILLE
+for ((b = 0; b < 256; b++)); do
+  eval "BRAILLE[b+1]=\$'\\xe2\\x$(printf %02x $((0xa0 | b >> 6)))\\x$(printf %02x $((0x80 | b & 0x3f)))'"
+done
+# dot pairs per band row, top→bottom: (1,4)(2,5)(3,6)(7,8)
+PAIR=(9 18 36 192)
+
+rep() { REP=""; local i; for ((i = 0; i < $2; i++)); do REP+=$1; done }
+
+bar() { # $1 fill% (0-100), $2 colour, $3 len -> global BARSTR
+  local f=${1:-0}; local n=${3:-16}
+  [[ "$f" == <-> ]] || f=0
+  (( f < 0 )) && f=0; (( f > 100 )) && f=100
+  local fr=$(( (f * n + 50) / 100 )); ((fr > n)) && fr=n
+  local e=$(( n - fr )); local fs="" es=""
+  if ((fr > 0)); then rep '█' $fr; fs=$REP; fi
+  if ((e > 0)); then rep '░' $e; es=$REP; fi
+  BARSTR="$2${fs}${C_BARBG}${es}${R}"
+}
+
+tierP() { # free% tier -> colour on stdout
+  if (( $1 < 10 )); then print -r -- $C_R
+  elif (( $1 < 25 )); then print -r -- $C_Y
+  else print -r -- $C_G; fi
+}
+tierS() { # used% tier -> colour on stdout
+  if (( $1 > 80 )); then print -r -- $C_R
+  elif (( $1 > 55 )); then print -r -- $C_Y
+  else print -r -- $C_G; fi
+}
+
+chart() { # $1=array name $2=mode(P/S) $3=rows $4=width -> CHART (rows lines)
+  local -a s ct; eval "s=(\"\${(@)$1}\")"
+  local mode=$2 rows=$3 width=$4
+  local n=${#s}
+  local off=$((width - n)); ((off < 0)) && off=0
+  local T=$((rows * 4)) T2=$((rows - 1))
+  local c v fill f bits d r
+  ct=()
+  for ((c = 1; c <= width; c++)); do
+    v=${s[c-off]:-0}
+    if [[ $mode == P ]]; then ct[c]=$(tierP $v); else ct[c]=$(tierS $v); fi
+  done
+  CHART=""
+  local line run prevcol cell
+  for ((r = 0; r < rows; r++)); do
+    line=""
+    if ((off > 0)); then rep ' ' $off; line=$REP; fi
+    run=""; prevcol=""
+    for ((c = off + 1; c <= width; c++)); do
+      v=${s[c-off]:-0}
+      fill=$(( (v * T + 50) / 100 )); (( v > 0 && fill < 1 )) && fill=1
+      f=$((fill - (T2 - r) * 4)); ((f < 0)) && f=0; ((f > 4)) && f=4
+      bits=0
+      for ((d = 0; d < 4; d++)); do (( (3 - d) < f )) && bits=$((bits + PAIR[d+1])); done
+      cell=${BRAILLE[bits+1]}
+      if [[ -n "$prevcol" && "$ct[c]" != "$prevcol" ]]; then
+        line+="${prevcol}${run}${R}"; run=""
+      fi
+      run+=$cell; prevcol=$ct[c]
+    done
+    [[ -n "$run" ]] && line+="${prevcol}${run}${R}"
+    CHART+="${line}"$'\n'
+  done
+}
+
+sparkline() { # ASCII fallback: $1=array name, $2=mode, $3=cells
+  local -a s; eval "s=(\"\${(@)$1}\")"
+  local mode=$2 need=$3
+  local n=${#s}
+  local off=$((need - n)); ((off < 0)) && off=0
+  local out="" i idx v col
+  for ((i = 0; i < need; i++)); do
+    if ((i < off)); then out+=" "; continue; fi
+    idx=$((i - off + 1)); v=${s[idx]}
+    if [[ "$mode" == "P" ]]; then
+      if ((v < 10)); then col=$C_R; elif ((v < 25)); then col=$C_Y; else col=$C_G; fi
+    else
+      if ((v > 80)); then col=$C_R; elif ((v > 55)); then col=$C_Y; else col=$C_G; fi
+    fi
+    out+="${col}${SKCH[$((v * 7 / 100 + 1))]}"
+  done
+  CHART="${out}"$'\n'
+}
+
+while true; do
+  read -r LINES COLS <<< "$(stty size 2>/dev/null)"
+  [[ -z "$COLS" || "$COLS" -lt 40 ]] && COLS=56
+  [[ -z "$LINES" ]] && LINES=24
+  [ -n "$MW_COLS" ] && COLS=$MW_COLS
+  CW=$((COLS - 2))
+  chartw=$((CW - 1))
+
+  pf=$(memory_pressure -Q 2>/dev/null | grep -oE '[0-9]+%' | tail -1 | tr -d '%')
+  [[ "$pf" == <-> ]] || pf=50
+
+  sf=0; swaplab="none"
+  read -r sf swaplab <<< "$(sysctl -n vm.swapusage 2>/dev/null | awk '
+    { for (i = 1; i < NF; i++) { if ($i == "total") t = $(i+2); if ($i == "used") u = $(i+2) } }
+    END {
+      gsub("M", "", t); gsub("M", "", u)
+      if (t+0 <= 0) { printf "0 none"; exit }
+      p = (u+0) * 100 / (t+0); if (p > 100) p = 100
+      printf "%d %.1f/%.1fG", p, (u+0)/1024, (t+0)/1024
+    }')"
+  [[ "$sf" == <-> ]] || sf=0
+
+  histP+=($pf); histS+=($sf)
+  while (( ${#histP} > chartw )); do histP=(${histP[2,-1]}); histS=(${histS[2,-1]}); done
+
+  mn=100 mx=0 sm=0 c=0
+  for v in "${(@)histP}"; do ((v<mn))&&mn=$v; ((v>mx))&&mx=$v; sm=$((sm+v)); c=$((c+1)); done
+  av=$(( c > 0 ? sm / c : 50 ))
+  smin=100 smax=0
+  for v in "${(@)histS}"; do ((v<smin))&&smin=$v; ((v>smax))&&smax=$v; done
+
+  winsec=$(( ${#histP} * INTERVAL ))
+  la=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | xargs)
+  now=$(date '+%a %d %b %H:%M:%S')
+
+  TC2=$(tierP $pf)
+  STC=$(tierS $sf)
+
+  barlen=$((COLS - 40)); ((barlen < 8)) && barlen=8; ((barlen > 36)) && barlen=36
+  bar "$((100 - pf))" "$TC2" "$barlen"; pbar=$BARSTR
+  bar "$sf" "$STC" "$barlen";            sbar=$BARSTR
+
+  P_ROWS=4 S_ROWS=2
+  ((LINES < 20)) && { P_ROWS=3; S_ROWS=2 }
+  ((LINES < 17)) && { P_ROWS=2; S_ROWS=1 }
+
+  if [[ "$MW_ASCII" == 1 ]]; then
+    sparkline histP P "$chartw"; chartP=${CHART%$'\n'}
+    sparkline histS S "$chartw"; chartS=${CHART%$'\n'}
+  else
+    chart histP P "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
+    chart histS S "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
+  fi
+
+  rl=$((COLS - 12 - ${#now} - 2)); ((rl < 0)) && rl=0
+  rep '─' $rl; RULE=$REP
+
+  out=$'\e[H\e[2J'
+  out+=" ${C_ACC}${BL}◆ MEMORY${R} ${C_DIM}${RULE}${R} ${now}"$'\n'$'\n'
+  out+=" ${C_TXT}${BL}$(printf '%-9s' PRESSURE)${R} ${TC2}${BL}$(printf '%-11s' "${pf}% free")${R} [${pbar}] ${C_DIM}${mn}-${mx} avg ${av}${R}"$'\n'
+  out+="$chartP"$'\n'
+  out+=" ${C_TXT}${BL}$(printf '%-9s' SWAP)${R} ${STC}${BL}$(printf '%-11s' "$swaplab")${R} [${sbar}] ${C_DIM}${smin}-${smax}%${R}"$'\n'
+  out+="$chartS"$'\n'
+  out+=" ${C_DIM}last ${winsec}s · 2s/sample · load ${la}${R}"$'\n'
+  out+=" ${C_DIM}pressure = free % (green ≥25 · amber 10–25 · red <10) · swap = used % · MW_ASCII=1 = font fallback${R}"$'\n'$'\n'
+  out+=" ${C_DIM}${BL}TOP RSS${R}"$'\n'
+
+  i=1
+  while IFS='|' read -r sz nm; do
+    [[ -z "$sz" ]] && continue
+    out+=" $(printf '%2d' $i) ${C_DIM}$(printf '%6s' $sz)${R}  ${C_TXT}${nm}${R}"$'\n'
+    i=$((i + 1))
+  done <<< "$(ps axo rss=,comm= 2>/dev/null | sort -rn | head -5 | awk '{r=$1;n=$0;sub(/^[^ ]+ +/,"",n); sub(/^.*\//,"",n); sub(/^-/,"",n); if(length(n)>34)n=substr(n,1,34); if(r+0>1048576)printf "%.1fG|%s\n",r/1048576,n; else printf "%.0fM|%s\n",r/1024,n}')"
+
+  printf '%s' "$out"
+  sleep $INTERVAL
+done
