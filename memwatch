@@ -288,18 +288,17 @@ while true; do
   for ((i = 1; i <= ${#histP}; i++)); do
     freeRaw=$((100 - histP[i]))
     sl=0
-    (( i > 3 )) && sl=$(( (shP[i] - shP[i-3]) * 10 ))   # %/min over 3 samples
-    (( prevSlope = (sl + prevSlope) / 2 ))
-    # smooth: colour level = f(slope %/min), clamped — no discrete bands.
-    # Wide amber band per Oliver: green to ~6%/min, amber 6-16, then slow
-    # approach (red onset 16, full red ~28 — red is for extreme growth).
+    (( i > 10 )) && sl=$(( (shP[i] - shP[i-10]) * 60 / (10 * INTERVAL) ))   # %/min over 20s
+    (( prevSlope = (sl + 2 * prevSlope) / 3 ))   # heavy EMA: fast memory sawtooths
+    # smooth: colour level = f(slope %/min over 20s), clamped. Fast memory
+    # swings hard, so green is generous: ≤15%/min green, amber 15-32,
+    # red onset 32, full red ~48 — red = sustained extreme growth only.
     if (( freeRaw < 5 )); then cpl=100
     elif (( freeRaw < 10 )); then cpl=88
     else
-      if (( prevSlope <= 2 )); then cpl=$(( prevSlope * 6 ))
-      elif (( prevSlope <= 6 )); then cpl=$(( 12 + (prevSlope - 2) * 6 ))
-      elif (( prevSlope <= 16 )); then cpl=$(( 36 + (prevSlope - 6) * 44 / 10 ))
-      elif (( prevSlope <= 28 )); then cpl=$(( 80 + (prevSlope - 16) * 20 / 12 ))
+      if (( prevSlope <= 15 )); then cpl=$(( prevSlope * 2 ))
+      elif (( prevSlope <= 32 )); then cpl=$(( 30 + (prevSlope - 15) * 50 / 17 ))
+      elif (( prevSlope <= 48 )); then cpl=$(( 80 + (prevSlope - 32) * 20 / 16 ))
       else cpl=100
       fi
       (( cpl < 0 )) && cpl=0; (( cpl > 100 )) && cpl=100
