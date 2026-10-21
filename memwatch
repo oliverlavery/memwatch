@@ -96,6 +96,10 @@ for line in sys.stdin:
     sm = re.search(r"sessionKey=(\S+)", line)
     if sm and keypat.match(sm.group(1)):
         skeys.append((ts, sm.group(1)))
+    else:
+        lm = re.search(r"lane=session:(agent:[A-Za-z0-9:_-]+)", line)
+        if lm and keypat.match(lm.group(1)):
+            skeys.append((ts, lm.group(1)))
 if not skeys:
     sys.exit(0)
 cands = [x for x in skeys if x[0] <= t + 0.5]
