@@ -45,12 +45,22 @@ typeset -a RAMP
 for ((i = 0; i <= 10; i++)); do
   RAMP[i+1]=$'\e[38;5;'"$((RAMP_RAW[i+1]))"'m'
 done
-# extended ramp: 101 colours, linearly interpolated between the anchors so
-# colour transitions are smooth (no 10%-step banding)
-typeset -a RAMPX
+# extended ramp: 101 levels. Interpolate the anchors in RGB space and snap
+to the nearest xterm 256-cube colour — interpolating PALETTE INDICES walks
+# the colour cube through maroon/blue/purple (46→82 passes 53=maroon,
+# 57=blue), which is exactly the rainbow-bar bug. Components are on the
+# 0-5 cube scale; rounding keeps us on valid cube colours.
+typeset -a APR APG APB RAMPX
+for ((i = 0; i <= 10; i++)); do
+  n=$(( RAMP_RAW[i+1] - 16 ))
+  APR[i+1]=$(( n / 36 )); APG[i+1]=$(( n % 36 / 6 )); APB[i+1]=$(( n % 6 ))
+done
 for ((i = 0; i <= 100; i++)); do
   a=$(( i / 10 )); b=$(( a < 10 ? a + 1 : a )); f=$(( i - a * 10 ))
-  RAMPX[i+1]=$'\e[38;5;'"$(( RAMP_RAW[a+1] + (RAMP_RAW[b+1] - RAMP_RAW[a+1]) * f / 10 ))"'m'
+  r=$(( (APR[a+1] * 10 + (APR[b+1] - APR[a+1]) * f + 5) / 10 ))
+  g=$(( (APG[a+1] * 10 + (APG[b+1] - APG[a+1]) * f + 5) / 10 ))
+  bl=$(( (APB[a+1] * 10 + (APB[b+1] - APB[a+1]) * f + 5) / 10 ))
+  RAMPX[i+1]=$'\e[38;5;'"$(( 16 + 36 * r + 6 * g + bl ))"'m'
 done
 
 rampcol() { # $1=colour-level 0-100 -> SGR on stdout (shared smooth ramp)
