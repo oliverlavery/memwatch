@@ -106,7 +106,7 @@ for line in sys.stdin:
             skeys.append((ts, lm.group(1)))
 if not skeys and not progruns:
     sys.exit(0)
-pcands = [x for x in progruns if abs(x[0] - t) <= 10]
+pcands = [x for x in progruns if -120 <= (t - x[0]) <= 10]
 if pcands:
     print("program:" + max(pcands, key=lambda x: x[0])[1])
     sys.exit(0)
