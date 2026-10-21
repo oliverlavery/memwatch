@@ -30,8 +30,8 @@ a phone terminal (tested with [Blink Shell](https://blink.sh) on iOS).
   pressure grows, btop-meter style.
   - colour follows pressure **growth**, Activity-Monitor style, with smooth
     interpolation (no discrete states). Slope over a responsive 6s window:
-    green ≤6%/min, wide amber band 6–30, red onset ~30, full red at
-    ~50%/min — red means extreme growth only
+    green ≤15%/min, amber 15–250, red onset ~250 (25 pressure-points in 6s),
+    full red at ~500 ("50% in 3s") — red means explosive growth only
   - floor overrides: free <10% forces amber, free <5% forces red
 - **SWAP** — swap usage as % of total swap size, with used/total in GB
   (colour = swap used as % of **total RAM**, since swap capacity is dynamic:
