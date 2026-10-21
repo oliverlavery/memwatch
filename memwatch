@@ -309,7 +309,7 @@ for s in d.get("sessions", []):
       [[ -z "$label" ]] && label="unattributed"
       label=${label#agent:}
       label=$(print -r -- "$label" | sed -E 's/([0-9a-f]{8})-[0-9a-f-]+/\1/g')
-      label=${label%%[[:space:]]*}; label=${label:0:20}
+      label=${label%%[[:space:]]*}; label=${label:0:18}
       pfxk=$(( ${pfx:-0} / 1000 ))
       if (( infl == 1 )); then
         dur=$(( now_s - ${tstart%%.*} )); ((dur < 0)) && dur=0
