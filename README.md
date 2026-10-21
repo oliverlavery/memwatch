@@ -28,8 +28,11 @@ a phone terminal (tested with [Blink Shell](https://blink.sh) on iOS).
   Monitor plots as "Memory Pressure". The gauge shows **% free** (higher =
   safer); the chart and bar plot **pressure** (100 − free) and grow as memory
   pressure grows, btop-meter style.
-  - colour everywhere derives from pressure: green low · amber mid · red high
-- **SWAP** — swap usage as % of total swap size, with used/total in GB.
+  - colour follows pressure **growth**, Activity-Monitor style: steady usage
+    stays green, sustained rise goes amber, sharp rise red, relief green
+  - floor overrides: free <10% forces amber, free <5% forces red
+- **SWAP** — swap usage as % of total swap size, with used/total in GB
+  (colour still level-based: filling swap is its own signal).
 - **TOP RSS** — the five largest processes by resident memory.
 
 History is sampled every 2 s and rendered as multi-row [braille](https://en.wikipedia.org/wiki/Braille_Patterns)
