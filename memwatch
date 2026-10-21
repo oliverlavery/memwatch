@@ -361,12 +361,12 @@ for s in d.get("sessions", []):
       label=$(grep "^$sid|" "$INFMAP" 2>/dev/null | tail -1 | cut -d'|' -f2)
       if [[ -z "$label" ]]; then
         label=$(attribute "$tsuse")
-      fi
-      if [[ -z "$label" ]]; then
-        label=$(livejoin "$tsuse")
-      fi
-      if [[ -n "$label" ]]; then
-        printf '%s|%s|%s\n' "$sid" "$label" "$now_s" >> "$INFMAP"
+        if [[ -z "$label" ]]; then
+          label=$(livejoin "$tsuse")
+        fi
+        if [[ -n "$label" ]]; then
+          printf '%s|%s|%s\n' "$sid" "$label" "$now_s" >> "$INFMAP"
+        fi
       fi
       [[ -z "$label" ]] && label="unattributed"
       label=${label#agent:}
