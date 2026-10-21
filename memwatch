@@ -319,7 +319,7 @@ for s in d.get("sessions", []):
     while IFS='|' read -r port sid infl tstart pfx nturns lastacc; do
       [[ -z "$sid" ]] && continue
       label=$(grep "^$sid|" "$INFMAP" 2>/dev/null | tail -1 | cut -d'|' -f2)
-      if [[ -z "$label" && "$infl" == 1 ]]; then
+      if [[ -z "$label" ]]; then
         label=$(attribute "$tstart")
         if [[ -n "$label" ]]; then
           printf '%s|%s|%s\n' "$sid" "$label" "$now_s" >> "$INFMAP"
