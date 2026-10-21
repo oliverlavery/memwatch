@@ -290,16 +290,15 @@ while true; do
     sl=0
     (( i > 3 )) && sl=$(( (shP[i] - shP[i-3]) * 10 ))   # %/min over 3 samples
     (( prevSlope = (sl + prevSlope) / 2 ))
-    # smooth: colour level = f(slope %/min over 6s), clamped. Responsive
-    # window (fast memory changes fast — Oliver rejected 20s smoothing).
-    # green ≤6, wide amber 6-30, red onset 30, full red at 50%/min.
+    # smooth: colour level = f(slope %/min over 6s), clamped. Red anchored
+    # to Oliver's "50% in 3s": full red ≈ 50 pressure-points in 6s
+    # (500%/min), onset 25 points (250%/min), amber everywhere below.
     if (( freeRaw < 5 )); then cpl=100
     elif (( freeRaw < 10 )); then cpl=88
     else
-      if (( prevSlope <= 2 )); then cpl=$(( prevSlope * 6 ))
-      elif (( prevSlope <= 6 )); then cpl=$(( 12 + (prevSlope - 2) * 6 ))
-      elif (( prevSlope <= 30 )); then cpl=$(( 36 + (prevSlope - 6) * 44 / 24 ))
-      elif (( prevSlope <= 50 )); then cpl=$(( 80 + (prevSlope - 30) ))
+      if (( prevSlope <= 15 )); then cpl=$(( prevSlope * 2 ))
+      elif (( prevSlope <= 250 )); then cpl=$(( 30 + (prevSlope - 15) * 50 / 235 ))
+      elif (( prevSlope <= 500 )); then cpl=$(( 80 + (prevSlope - 250) * 20 / 250 ))
       else cpl=100
       fi
       (( cpl < 0 )) && cpl=0; (( cpl > 100 )) && cpl=100
