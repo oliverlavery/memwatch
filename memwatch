@@ -71,15 +71,16 @@ framed() { # $1 = multi-line chart content -> FRAMED (dim rail on every line)
   while IFS= read -r row; do FRAMED+=" ${C_DIM}│${R}${row}"$'\n'; done <<< "$1"
 }
 
-attribute() { # $1 = in_flight_started_s (epoch) -> OpenClaw sessionKey via
-  # timing join: the mtplx request start ≈ T, the owning turn is the turn
-  # whose sessionKey milestone immediately precedes that fetch in gateway.log
-  # (skip [exec] lines — our own greps get logged and pollute the patterns)
+attribute() { # $1 = in_flight_started_s (epoch) -> OpenClaw sessionKey.
+  # [model-fetch] start lines are no longer logged (last real one Oct 13),
+  # so anchor on [agent-turn-timing] lines (runId+sessionKey, logged
+  # throughout a turn): the owner is the turn whose milestone immediately
+  # precedes the dispatch. [exec] lines skipped — our own greps get logged
+  # and pollute the patterns.
   tail -c 400000 "$GWLOG" 2>/dev/null | python3 -c '
 import sys, re, datetime
 t = float(sys.argv[1])
 skeys = []
-fetches = []
 pat = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+)([+-]\d\d:\d\d) ")
 keypat = re.compile(r"^agent:[A-Za-z0-9:_-]+$")
 for line in sys.stdin:
@@ -90,23 +91,18 @@ for line in sys.stdin:
         ts = datetime.datetime.fromisoformat(m.group(1) + m.group(2)).timestamp()
     except Exception:
         continue
-    if ts > t + 1:
-        continue
     if "[exec]" in line:
         continue
-    if "[provider-transport-fetch] [model-fetch] start" in line and "provider=mtplx" in line:
-        fetches.append(ts)
     sm = re.search(r"sessionKey=(\S+)", line)
     if sm and keypat.match(sm.group(1)):
         skeys.append((ts, sm.group(1)))
-if not fetches:
+if not skeys:
     sys.exit(0)
-f = max(fetches)
-cands = [x for x in skeys if x[0] <= f + 2]
+cands = [x for x in skeys if x[0] <= t + 0.5]
 if not cands:
     sys.exit(0)
 ts, key = max(cands, key=lambda x: x[0])
-if f - ts > 600:
+if t - ts > 300:
     sys.exit(0)
 print(key)
 ' "$1" 2>/dev/null
@@ -313,25 +309,32 @@ for s in d.get("sessions", []):
       [[ -z "$label" ]] && label="unattributed"
       label=${label#agent:}
       label=$(print -r -- "$label" | sed -E 's/([0-9a-f]{8})-[0-9a-f-]+/\1/g')
-      label=${label%%[[:space:]]*}; label=${label:0:24}
+      label=${label%%[[:space:]]*}; label=${label:0:20}
       pfxk=$(( ${pfx:-0} / 1000 ))
       if (( infl == 1 )); then
         dur=$(( now_s - ${tstart%%.*} )); ((dur < 0)) && dur=0
-        INF_ROWS+=" ${C_ACC}${BL}●${R} ${C_DIM}${sid:5:8}${R} ${C_TXT}${label}${R} ${C_DIM}${pfxk}k ${nturns}t · live $((dur / 60))m$((dur % 60))s${R}"$'\n'
+        INF_ROWS+="${C_ACC}${BL}●${R} ${C_DIM}${sid:5:8}${R} ${C_TXT}${label}${R} ${C_DIM}${pfxk}k ${nturns}t · live $((dur / 60))m$((dur % 60))s${R}"$'\n'
         INF_ACT=$((INF_ACT + 1))
       else
         age=$(( now_s - ${lastacc%%.*} )); ((age < 0)) && age=0
-        INF_ROWS+="   ${C_DIM}${sid:5:8} ${label} ${pfxk}k ${nturns}t · $((age / 60))m ago${R}"$'\n'
+        INF_ROWS+="  ${C_DIM}${sid:5:8} ${label} ${pfxk}k ${nturns}t · $((age / 60))m ago${R}"$'\n'
       fi
       INF_N=$((INF_N + 1))
     done <<< "$sorted"
   fi
   if (( INF_UP == 0 )); then
     INF_HDR=" ${C_DIM}INFERENCE · no mtplx servers up${R}"
+    INF_LINES=1
   else
-    INF_HDR=" ${C_ACC}${BL}INFERENCE${R} ${C_DIM}${INF_ACT} active · ${INF_N} session(s) · ${INF_UP} server(s) up${R}"
+    INF_HDR=" ${C_ACC}${BL}INFERENCE${R} ${C_DIM}${INF_ACT} active · ${INF_N} sess · ${INF_UP} up${R}"
+    if (( INF_N > 0 )); then
+      framed "${INF_ROWS%$'\n'}"; INF_ROWS="$FRAMED"
+      INF_ROWS+=" ${C_DIM}╰${HRULE}${R}"$'\n'
+      INF_LINES=$((INF_N + 2))
+    else
+      INF_LINES=1
+    fi
   fi
-  INF_LINES=$(( INF_N > 0 ? INF_N + 1 : 1 ))
 
   rl=$((COLS - 12 - ${#now} - 2)); ((rl < 0)) && rl=0
   rep '─' $rl; RULE=$REP
@@ -355,20 +358,20 @@ for s in d.get("sessions", []):
   fi
   out+="$INF_HDR"$'\n'
   out+="$INF_ROWS"
-  out+=" ${C_DIM}last ${winsec}s · 2s/sample · load ${la}${R}"$'\n'
-  out+=" ${C_DIM}charts = pressure · taller = worse · label = % free${R}"$'\n'$'\n'
+  out+=" ${C_DIM}${winsec}s window · 2s/sample · load ${la}${R}"$'\n'$'\n'
 
   # TOP: fill remaining screen with top-N processes by phys_footprint (total),
   # showing RSS alongside. footprint = Activity Monitor's Memory column —
   # catches big-foots whose RSS lies (e.g. GPU/wired dirty pages in swap).
-  TOP_N=$((LINES - 12 - P_ROWS - S_ROWS - INF_LINES)); ((TOP_N < 5)) && TOP_N=5
+  TOP_N=$((LINES - 11 - P_ROWS - S_ROWS - INF_LINES)); ((TOP_N < 5)) && TOP_N=5
 
   typeset -A PRSS PNAME
   PRSS=() PNAME=()
+  local namew=$((COLS - 27)); ((namew < 10)) && namew=10
   while IFS='|' read -r pid rss nm; do
     [[ -z "$pid" ]] && continue
     PRSS[$pid]=$rss; PNAME[$pid]=$nm
-  done <<< "$(ps axo pid=,rss=,comm= 2>/dev/null | awk '{pid=$1;rss=$2;n=$0;sub(/^[^ ]+ +[^ ]+ +/,"",n); sub(/^.*\//,"",n); sub(/^-/,"",n); if(length(n)>30)n=substr(n,1,30); printf "%s|%s|%s\n",pid,rss,n}')"
+  done <<< "$(ps axo pid=,rss=,comm= 2>/dev/null | awk -v nw="$namew" '{pid=$1;rss=$2;n=$0;sub(/^[^ ]+ +[^ ]+ +/,"",n); sub(/^.*\//,"",n); sub(/^-/,"",n); if(length(n)>nw)n=substr(n,1,nw); printf "%s|%s|%s\n",pid,rss,n}')"
 
   out+=" ${C_DIM}${BL}TOP PROCESSES${R} ${C_DIM}RSS / total footprint${R}"$'\n'
   out+=" ${C_DIM}  #   PID    RSS  TOTAL${R}"$'\n'
