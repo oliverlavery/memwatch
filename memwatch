@@ -97,6 +97,8 @@ for line in sys.stdin:
     pm = re.search(r"runId=([a-z][a-z0-9-]*):[0-9a-f-]+", line)
     if pm and "prompt-cache" in line:
         progruns.append((ts, pm.group(1)))
+    if "[sessions/lifecycle]" in line and "operation=compaction" in line:
+        progruns.append((ts, "compaction"))
     sm = re.search(r"sessionKey=(\S+)", line)
     if sm and keypat.match(sm.group(1)):
         skeys.append((ts, sm.group(1)))
