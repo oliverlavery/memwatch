@@ -290,12 +290,18 @@ while true; do
     sl=0
     (( i > 3 )) && sl=$(( (shP[i] - shP[i-3]) * 10 ))   # %/min over 3 samples
     (( prevSlope = (sl + prevSlope) / 2 ))
-    # smooth: colour level = 7 × slope(%/min), clamped — no discrete bands.
-    # amber onset ~5%/min, red ~14%/min; relief (slope<=0) clamps to green.
+    # smooth: colour level = f(slope %/min), clamped — no discrete bands.
+    # Wide amber band per Oliver: green to ~6%/min, amber 6-16, then slow
+    # approach (red onset 16, full red ~28 — red is for extreme growth).
     if (( freeRaw < 5 )); then cpl=100
     elif (( freeRaw < 10 )); then cpl=88
     else
-      cpl=$(( prevSlope * 7 ))
+      if (( prevSlope <= 2 )); then cpl=$(( prevSlope * 6 ))
+      elif (( prevSlope <= 6 )); then cpl=$(( 12 + (prevSlope - 2) * 6 ))
+      elif (( prevSlope <= 16 )); then cpl=$(( 36 + (prevSlope - 6) * 44 / 10 ))
+      elif (( prevSlope <= 28 )); then cpl=$(( 80 + (prevSlope - 16) * 20 / 12 ))
+      else cpl=100
+      fi
       (( cpl < 0 )) && cpl=0; (( cpl > 100 )) && cpl=100
     fi
     cpP+=($cpl)
