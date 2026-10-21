@@ -266,10 +266,15 @@ while true; do
   typeset -a inf_all
   inf_all=()
   INF_UP=0
+  UPMODELS=""
   for port in 5801 5800; do
     resp=$(curl -s -m 1 "http://127.0.0.1:$port/admin/sessions" 2>/dev/null)
     [[ -z "$resp" ]] && continue
     INF_UP=$((INF_UP + 1))
+    mname=$(curl -s -m 1 "http://127.0.0.1:$port/health" 2>/dev/null | grep -o '"model": *"[^"]*"' | head -1 | cut -d'"' -f4)
+    mshort=${mname#mtplx-flash-next-}; mshort=${mshort%%-*}
+    [[ -z "$mshort" || "$mshort" == "$mname" ]] && mshort=$([[ $port == 5801 ]] && echo opt || echo bare)
+    UPMODELS+="${mshort}+"
     parsed=$(printf '%s' "$resp" | python3 -c '
 import json, sys
 try:
@@ -326,7 +331,7 @@ for s in d.get("sessions", []):
     INF_HDR=" ${C_DIM}INFERENCE · no mtplx servers up${R}"
     INF_LINES=1
   else
-    INF_HDR=" ${C_ACC}${BL}INFERENCE${R} ${C_DIM}${INF_ACT} active · ${INF_N} sess · ${INF_UP} up${R}"
+    INF_HDR=" ${C_TXT}${BL}INFERENCE${R} ${C_DIM}${INF_ACT} active · ${INF_N} sess · ${UPMODELS%+} up${R}"
     if (( INF_N > 0 )); then
       framed "${INF_ROWS%$'\n'}"; INF_ROWS="$FRAMED"
       INF_ROWS+=" ${C_DIM}╰${HRULE}${R}"$'\n'
