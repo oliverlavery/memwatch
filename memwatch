@@ -18,6 +18,8 @@
 INTERVAL=2
 GWLOG=/Users/oliver/Library/Logs/openclaw/gateway.log
 INFMAP=~/.cache/memwatch-infer.map
+TSMAP=~/.cache/memwatch-tstart.map
+OCSNAP=/tmp/mw-oc-sessions.json
 
 typeset -a histP histS
 histP=() histS=()
@@ -203,6 +205,32 @@ sparkline() { # ASCII fallback: $1=plot array $2=colour-src array (RAW) $3=cells
   CHART="${out}"$'\n'
 }
 
+livejoin() { # $1 = tstart (epoch) -> live OpenClaw sessionKey from the status
+  # snapshot (openclaw sessions --active, refreshed in background). Heuristic
+  # join: if exactly one session is running, it owns the inference; with
+  # several, nearest lastInteraction to the request start.
+  python3 -c '
+import json, sys
+t = float(sys.argv[1])
+try:
+    d = json.load(open("/tmp/mw-oc-sessions.json"))
+except Exception:
+    sys.exit(0)
+items = d if isinstance(d, list) else d.get("sessions", d.get("items", []))
+run = [s for s in items if s.get("status") == "running" and s.get("key")]
+if not run:
+    sys.exit(0)
+if len(run) == 1:
+    print(run[0]["key"]); sys.exit(0)
+def near(s):
+    li = s.get("lastInteractionAt") or s.get("updatedAt") or 0
+    return abs(li / 1000.0 - t)
+best = min(run, key=near)
+if near(best) <= 600:
+    print(best["key"])
+' "$1" 2>/dev/null
+}
+
 while true; do
   read -r LINES COLS <<< "$(stty size 2>/dev/null)"
   [[ -z "$COLS" || "$COLS" -lt 40 ]] && COLS=56
@@ -274,9 +302,14 @@ while true; do
   fi
 
   # INFERENCE panel: live mtplx sessions via llama-swap upstreams
-  # (:5801 optimized, :5800 bare). Attribution via timing join, cached in
-  # $INFMAP so each session is resolved once against gateway.log.
+  # (:5801 optimized, :5800 bare). Attribution chain: cached label -> log
+  # anchors -> live OpenClaw session-status join. Snapshot refreshed in
+  # background every ~10s (CLI needs a warm node, ~0.7s per call).
   mkdir -p ~/.cache
+  ocage=$(stat -f %m "$OCSNAP" 2>/dev/null || echo 0)
+  if (( $(date +%s) - ocage > 10 )); then
+    ( /opt/homebrew/bin/openclaw sessions --active 10 --all-agents --json > "$OCSNAP.new" 2>/dev/null && mv "$OCSNAP.new" "$OCSNAP" ) > /dev/null 2>&1 &
+  fi
   typeset -a inf_all
   inf_all=()
   INF_UP=0
@@ -318,12 +351,22 @@ for s in d.get("sessions", []):
     now_s=$(date +%s)
     while IFS='|' read -r port sid infl tstart pfx nturns lastacc; do
       [[ -z "$sid" ]] && continue
+      tsuse=$tstart
+      [[ -z "$tsuse" || "$tsuse" == 0 ]] && tsuse=$(grep "^$sid|" "$TSMAP" 2>/dev/null | tail -1 | cut -d'|' -f2)
+      if (( infl == 1 && ${tstart:-0} > 0 )); then
+        grep -v "^$sid|" "$TSMAP" 2>/dev/null > "$TSMAP.n"
+        printf '%s|%s\n' "$sid" "$tstart" >> "$TSMAP.n"
+        mv "$TSMAP.n" "$TSMAP"
+      fi
       label=$(grep "^$sid|" "$INFMAP" 2>/dev/null | tail -1 | cut -d'|' -f2)
       if [[ -z "$label" ]]; then
-        label=$(attribute "$tstart")
-        if [[ -n "$label" ]]; then
-          printf '%s|%s|%s\n' "$sid" "$label" "$now_s" >> "$INFMAP"
-        fi
+        label=$(attribute "$tsuse")
+      fi
+      if [[ -z "$label" ]]; then
+        label=$(livejoin "$tsuse")
+      fi
+      if [[ -n "$label" ]]; then
+        printf '%s|%s|%s\n' "$sid" "$label" "$now_s" >> "$INFMAP"
       fi
       [[ -z "$label" ]] && label="unattributed"
       label=${label#agent:}
