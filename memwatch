@@ -45,29 +45,17 @@ typeset -a RAMP
 for ((i = 0; i <= 10; i++)); do
   RAMP[i+1]=$'\e[38;5;'"$((RAMP_RAW[i+1]))"'m'
 done
-# bar gradient ladders, dark → bright (5 stops)
-GR_G=(22 28 34 40 46); GR_Y=(58 100 136 178 220); GR_R=(52 88 124 160 196)
-typeset -a LAD_G LAD_Y LAD_R
-for ((i = 1; i <= 5; i++)); do
-  LAD_G[i]=$'\e[38;5;'"$((GR_G[i]))"'m'
-  LAD_Y[i]=$'\e[38;5;'"$((GR_Y[i]))"'m'
-  LAD_R[i]=$'\e[38;5;'"$((GR_R[i]))"'m'
+# extended ramp: 101 colours, linearly interpolated between the anchors so
+# colour transitions are smooth (no 10%-step banding)
+typeset -a RAMPX
+for ((i = 0; i <= 100; i++)); do
+  a=$(( i / 10 )); b=$(( a < 10 ? a + 1 : a )); f=$(( i - a * 10 ))
+  RAMPX[i+1]=$'\e[38;5;'"$(( RAMP_RAW[a+1] + (RAMP_RAW[b+1] - RAMP_RAW[a+1]) * f / 10 ))"'m'
 done
 
-rampcol() { # $1=used-level 0-100 -> SGR on stdout (shared RAMP)
-  local i=$(( $1 / 10 )); ((i < 0)) && i=0; ((i > 10)) && i=10
-  print -r -- "$RAMP[i+1]"
-}
-ladderfor() { # $1=colour-level 0-100, $2=mode(P=growth colour, S=used level)
-  if [[ $2 == S ]]; then
-    (( $1 > 80 )) && { print -r -- LAD_R; return; }
-    (( $1 > 55 )) && { print -r -- LAD_Y; return; }
-    print -r -- LAD_G
-  else
-    (( $1 > 80 )) && { print -r -- LAD_R; return; }
-    (( $1 > 35 )) && { print -r -- LAD_Y; return; }
-    print -r -- LAD_G
-  fi
+rampcol() { # $1=colour-level 0-100 -> SGR on stdout (shared smooth ramp)
+  local i=$(( ${1:-0} + 1 )); ((i < 1)) && i=1; ((i > 101)) && i=101
+  print -r -- "$RAMPX[i]"
 }
 
 rep() { REP=""; local i; for ((i = 0; i < $2; i++)); do REP+=$1; done }
@@ -129,21 +117,21 @@ print(key)
 ' "$1" 2>/dev/null
 }
 
-bar() { # $1 fill% (0-100), $2=colour-level, $3=mode(P/S), $4=len -> global BARSTR
-  local f=${1:-0}; local n=${4:-16}
+bar() { # $1 fill% (0-100), $2=head colour-level, $3=len -> global BARSTR
+  local f=${1:-0}; local n=${3:-16}
   [[ "$f" == <-> ]] || f=0
   (( f < 0 )) && f=0; (( f > 100 )) && f=100
   local fr=$(( (f * n + 50) / 100 )); ((fr > n)) && fr=n
   local e=$(( n - fr ))
-  local lad; eval "lad=(\"\${(@)$(ladderfor $2 $3)}\")"
+  local head=${2:-0}
   BARSTR=""
-  local i
+  local i lv
   for ((i = 1; i <= fr; i++)); do
-    local li=$(( 1 + (i - 1) * 4 / (fr > 1 ? fr - 1 : 1) ))
+    lv=$(( head * i / fr ))   # gradient: calm at tail -> current heat at head
     if ((i == fr)); then
-      BARSTR+="${lad[li]}${BL}█"
+      BARSTR+="$(rampcol $lv)${BL}█"
     else
-      BARSTR+="${lad[li]}█"
+      BARSTR+="$(rampcol $lv)█"
     fi
   done
   BARSTR+=$R
@@ -249,15 +237,16 @@ while true; do
   pf=$((100 - freeP))                    # PRESSURE = used %
 
   sf=0; swaplab="none"
-  read -r sf swaplab <<< "$(sysctl -n vm.swapusage 2>/dev/null | awk '
+  read -r sf swaplab swapUsedM swapTotalM <<< "$(sysctl -n vm.swapusage 2>/dev/null | awk '
     { for (i = 1; i < NF; i++) { if ($i == "total") t = $(i+2); if ($i == "used") u = $(i+2) } }
     END {
       gsub("M", "", t); gsub("M", "", u)
       if (t+0 <= 0) { printf "0 none"; exit }
       p = (u+0) * 100 / (t+0); if (p > 100) p = 100
-      printf "%d %.1f/%.1fG", p, (u+0)/1024, (t+0)/1024
+      printf "%d %.1f/%.1fG %d %d", p, (u+0)/1024, (t+0)/1024, u+0, t+0
     }')"
   [[ "$sf" == <-> ]] || sf=0
+  swapUsedM=${swapUsedM:-0}; swapTotalM=${swapTotalM:-0}
 
   histP+=($pf); histS+=($sf)
   while (( ${#histP} > chartw )); do histP=(${histP[2,-1]}); histS=(${histS[2,-1]}); done
@@ -291,18 +280,28 @@ while true; do
     sl=0
     (( i > 3 )) && sl=$(( (shP[i] - shP[i-3]) * 10 ))   # %/min over 3 samples
     (( prevSlope = (sl + prevSlope) / 2 ))
+    # smooth: colour level = 7 × slope(%/min), clamped — no discrete bands.
+    # amber onset ~5%/min, red ~14%/min; relief (slope<=0) clamps to green.
     if (( freeRaw < 5 )); then cpl=100
     elif (( freeRaw < 10 )); then cpl=88
-    elif (( prevSlope <= 0 )); then cpl=0
-    elif (( prevSlope < 2 )); then cpl=$(( prevSlope * 5 ))
-    elif (( prevSlope < 6 )); then cpl=$(( 10 + (prevSlope - 2) * 12 ))
-    elif (( prevSlope < 14 )); then cpl=$(( 58 + (prevSlope - 6) * 5 ))
-    else cpl=100
+    else
+      cpl=$(( prevSlope * 7 ))
+      (( cpl < 0 )) && cpl=0; (( cpl > 100 )) && cpl=100
     fi
-    (( cpl > 100 )) && cpl=100
     cpP+=($cpl)
   done
   cpNow=${cpP[-1]:-0}
+
+  # swap colour: swap used as % of TOTAL RAM (swap capacity is dynamic —
+  # 3G swap on a 128G machine is ~2% and calm). amber ~6% of RAM, red ~13%.
+  totalRAM_M=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 ))
+  cpS=()
+  for ((i = 1; i <= ${#histS}; i++)); do
+    scl=$(( histS[i] * swapTotalM * 6 / (totalRAM_M > 0 ? totalRAM_M : 1) ))
+    (( scl < 0 )) && scl=0; (( scl > 100 )) && scl=100
+    cpS+=($scl)
+  done
+  scNow=${cpS[-1]:-0}
 
   mn=100 mx=0 sm=0 c=0
   for v in "${(@)histP}"; do ((v<mn))&&mn=$v; ((v>mx))&&mx=$v; sm=$((sm+v)); c=$((c+1)); done
@@ -315,8 +314,8 @@ while true; do
   now=$(date '+%a %d %b %H:%M:%S')
 
   barlen=$((COLS - 40)); ((barlen < 8)) && barlen=8; ((barlen > 36)) && barlen=36
-  bar "$pf" "$cpNow" P "$barlen"; pbar=$BARSTR
-  bar "$sf" "$sf" S "$barlen"; sbar=$BARSTR
+  bar "$pf" "$cpNow" "$barlen"; pbar=$BARSTR
+  bar "$sf" "$scNow" "$barlen"; sbar=$BARSTR
 
   P_ROWS=4 S_ROWS=2
   ((LINES < 21)) && { P_ROWS=3; S_ROWS=2 }
@@ -324,10 +323,10 @@ while true; do
 
   if [[ "$MW_ASCII" == 1 ]]; then
     sparkline shP cpP "$chartw"; chartP=${CHART%$'\n'}
-    sparkline shS histS "$chartw"; chartS=${CHART%$'\n'}
+    sparkline shS cpS "$chartw"; chartS=${CHART%$'\n'}
   else
     chart shP cpP "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
-    chart shS histS "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
+    chart shS cpS "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
   fi
 
   # INFERENCE panel: live mtplx sessions via llama-swap upstreams
@@ -440,7 +439,7 @@ for s in d.get("sessions", []):
     framed "$chartP"; out+="$FRAMED"
     out+=" ${C_DIM}╰${HRULE}${R}"$'\n'
   fi
-  out+=" ${C_TXT}${BL}$(printf '%-9s' SWAP)${R} $(rampcol $sf)${BL}$(printf '%-11s' "$swaplab")${R} [${sbar}] ${C_DIM}${smin}-${smax}%${R}"$'\n'
+  out+=" ${C_TXT}${BL}$(printf '%-9s' SWAP)${R} $(rampcol $scNow)${BL}$(printf '%-11s' "$swaplab")${R} [${sbar}] ${C_DIM}${smin}-${smax}%${R}"$'\n'
   if [[ "$MW_ASCII" == 1 ]]; then
     out+=" $chartS"$'\n'
   else
