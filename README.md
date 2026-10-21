@@ -32,6 +32,9 @@ a phone terminal (tested with [Blink Shell](https://blink.sh) on iOS).
     interpolation (no discrete states). Slope over a responsive 6s window:
     green ≤15%/min, amber 15–250, red onset ~250 (25 pressure-points in 6s),
     full red at ~500 ("50% in 3s") — red means explosive growth only
+  - half-window lag compensation: the colour series is shifted 2 samples
+    forward and the right edge additionally reads a fast 4s slope, so colour
+    centres on the shape it describes instead of lagging ~6s behind it
   - floor overrides: free <10% forces amber, free <5% forces red
 - **SWAP** — swap usage as % of total swap size, with used/total in GB
   (colour = swap used as % of **total RAM**, since swap capacity is dynamic:
