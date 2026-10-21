@@ -81,6 +81,7 @@ attribute() { # $1 = in_flight_started_s (epoch) -> OpenClaw sessionKey.
 import sys, re, datetime
 t = float(sys.argv[1])
 skeys = []
+progruns = []
 pat = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+)([+-]\d\d:\d\d) ")
 keypat = re.compile(r"^agent:[A-Za-z0-9:_-]+$")
 for line in sys.stdin:
@@ -93,6 +94,9 @@ for line in sys.stdin:
         continue
     if "[exec]" in line:
         continue
+    pm = re.search(r"runId=([a-z][a-z0-9-]*):[0-9a-f-]+", line)
+    if pm and "prompt-cache" in line:
+        progruns.append((ts, pm.group(1)))
     sm = re.search(r"sessionKey=(\S+)", line)
     if sm and keypat.match(sm.group(1)):
         skeys.append((ts, sm.group(1)))
@@ -100,7 +104,11 @@ for line in sys.stdin:
         lm = re.search(r"lane=session:(agent:[A-Za-z0-9:_-]+)", line)
         if lm and keypat.match(lm.group(1)):
             skeys.append((ts, lm.group(1)))
-if not skeys:
+if not skeys and not progruns:
+    sys.exit(0)
+pcands = [x for x in progruns if abs(x[0] - t) <= 10]
+if pcands:
+    print("program:" + max(pcands, key=lambda x: x[0])[1])
     sys.exit(0)
 cands = [x for x in skeys if x[0] <= t + 0.5]
 if not cands:
