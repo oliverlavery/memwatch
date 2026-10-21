@@ -58,11 +58,16 @@ rampcol() { # $1=used-level 0-100 -> SGR on stdout (shared RAMP)
   local i=$(( $1 / 10 )); ((i < 0)) && i=0; ((i > 10)) && i=10
   print -r -- "$RAMP[i+1]"
 }
-ladderfor() { # $1=used-level 0-100 -> ladder array name on stdout
-  # thresholds match the RAMP tiers so bar and chart colours always agree
-  if (( $1 > 80 )); then print -r -- LAD_R
-  elif (( $1 > 55 )); then print -r -- LAD_Y
-  else print -r -- LAD_G; fi
+ladderfor() { # $1=colour-level 0-100, $2=mode(P=growth colour, S=used level)
+  if [[ $2 == S ]]; then
+    (( $1 > 80 )) && { print -r -- LAD_R; return; }
+    (( $1 > 55 )) && { print -r -- LAD_Y; return; }
+    print -r -- LAD_G
+  else
+    (( $1 > 80 )) && { print -r -- LAD_R; return; }
+    (( $1 > 35 )) && { print -r -- LAD_Y; return; }
+    print -r -- LAD_G
+  fi
 }
 
 rep() { REP=""; local i; for ((i = 0; i < $2; i++)); do REP+=$1; done }
@@ -124,13 +129,13 @@ print(key)
 ' "$1" 2>/dev/null
 }
 
-bar() { # $1 fill% (0-100), $2=used-level (colour), $3=len -> global BARSTR
-  local f=${1:-0}; local n=${3:-16}
+bar() { # $1 fill% (0-100), $2=colour-level, $3=mode(P/S), $4=len -> global BARSTR
+  local f=${1:-0}; local n=${4:-16}
   [[ "$f" == <-> ]] || f=0
   (( f < 0 )) && f=0; (( f > 100 )) && f=100
   local fr=$(( (f * n + 50) / 100 )); ((fr > n)) && fr=n
   local e=$(( n - fr ))
-  local lad; eval "lad=(\"\${(@)$(ladderfor $2)}\")"
+  local lad; eval "lad=(\"\${(@)$(ladderfor $2 $3)}\")"
   BARSTR=""
   local i
   for ((i = 1; i <= fr; i++)); do
@@ -275,6 +280,30 @@ while true; do
     shP=("${(@)histP}"); shS=("${(@)histS}")
   fi
 
+  # Activity-Monitor-style colouring (option C): colour follows GROWTH of
+  # pressure, not level — steady usage stays green, sustained rise goes
+  # amber, sharp rise red. Absolute floor overrides: free <10% amber,
+  # <5% red. Relief (falling) is always green. cpP = per-sample colour
+  # level 0-100 feeding the shared ramp; slope = %/min over ~6s, smoothed.
+  cpP=(); prevSlope=0
+  for ((i = 1; i <= ${#histP}; i++)); do
+    freeRaw=$((100 - histP[i]))
+    sl=0
+    (( i > 3 )) && sl=$(( (shP[i] - shP[i-3]) * 10 ))   # %/min over 3 samples
+    (( prevSlope = (sl + prevSlope) / 2 ))
+    if (( freeRaw < 5 )); then cpl=100
+    elif (( freeRaw < 10 )); then cpl=88
+    elif (( prevSlope <= 0 )); then cpl=0
+    elif (( prevSlope < 2 )); then cpl=$(( prevSlope * 5 ))
+    elif (( prevSlope < 6 )); then cpl=$(( 10 + (prevSlope - 2) * 12 ))
+    elif (( prevSlope < 14 )); then cpl=$(( 58 + (prevSlope - 6) * 5 ))
+    else cpl=100
+    fi
+    (( cpl > 100 )) && cpl=100
+    cpP+=($cpl)
+  done
+  cpNow=${cpP[-1]:-0}
+
   mn=100 mx=0 sm=0 c=0
   for v in "${(@)histP}"; do ((v<mn))&&mn=$v; ((v>mx))&&mx=$v; sm=$((sm+v)); c=$((c+1)); done
   av=$(( c > 0 ? sm / c : 50 ))
@@ -286,18 +315,18 @@ while true; do
   now=$(date '+%a %d %b %H:%M:%S')
 
   barlen=$((COLS - 40)); ((barlen < 8)) && barlen=8; ((barlen > 36)) && barlen=36
-  bar "$pf" "$pf" "$barlen"; pbar=$BARSTR
-  bar "$sf" "$sf" "$barlen"; sbar=$BARSTR
+  bar "$pf" "$cpNow" P "$barlen"; pbar=$BARSTR
+  bar "$sf" "$sf" S "$barlen"; sbar=$BARSTR
 
   P_ROWS=4 S_ROWS=2
   ((LINES < 21)) && { P_ROWS=3; S_ROWS=2 }
   ((LINES < 18)) && { P_ROWS=2; S_ROWS=1 }
 
   if [[ "$MW_ASCII" == 1 ]]; then
-    sparkline shP histP "$chartw"; chartP=${CHART%$'\n'}
+    sparkline shP cpP "$chartw"; chartP=${CHART%$'\n'}
     sparkline shS histS "$chartw"; chartS=${CHART%$'\n'}
   else
-    chart shP histP "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
+    chart shP cpP "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
     chart shS histS "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
   fi
 
@@ -404,7 +433,7 @@ for s in d.get("sessions", []):
 
   out=$'\e[H\e[2J'
   out+=" ${C_ACC}${BL}◆ MEMORY${R} ${C_DIM}${RULE}${R} ${now}"$'\n'$'\n'
-  out+=" ${C_TXT}${BL}$(printf '%-9s' PRESSURE)${R} $(rampcol $pf)${BL}$(printf '%-11s' "${freeP}% free")${R} [${pbar}] ${C_DIM}${mn}-${mx} avg ${av}${R}"$'\n'
+  out+=" ${C_TXT}${BL}$(printf '%-9s' PRESSURE)${R} $(rampcol $cpNow)${BL}$(printf '%-11s' "${freeP}% free")${R} [${pbar}] ${C_DIM}${mn}-${mx} avg ${av}${R}"$'\n'
   if [[ "$MW_ASCII" == 1 ]]; then
     out+=" $chartP"$'\n'
   else
