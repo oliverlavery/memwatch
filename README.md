@@ -29,10 +29,9 @@ a phone terminal (tested with [Blink Shell](https://blink.sh) on iOS).
   safer); the chart and bar plot **pressure** (100 − free) and grow as memory
   pressure grows, btop-meter style.
   - colour follows pressure **growth**, Activity-Monitor style, with smooth
-    interpolation (no discrete states). Slope is measured over a 20s window
-    with heavy smoothing (fast memory sawtooths hard), so: steady or gently
-    swinging usage stays green (≤15%/min), amber 15–32, red onset ~32,
-    full red only ~48%/min — red means sustained extreme growth, not churn
+    interpolation (no discrete states). Slope over a responsive 6s window:
+    green ≤6%/min, wide amber band 6–30, red onset ~30, full red at
+    ~50%/min — red means extreme growth only
   - floor overrides: free <10% forces amber, free <5% forces red
 - **SWAP** — swap usage as % of total swap size, with used/total in GB
   (colour = swap used as % of **total RAM**, since swap capacity is dynamic:
