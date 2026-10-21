@@ -25,8 +25,10 @@ a phone terminal (tested with [Blink Shell](https://blink.sh) on iOS).
 ## What it shows
 
 - **PRESSURE** — macOS kernel pressure percentage, the same metric Activity
-  Monitor plots as "Memory Pressure". Displayed as *% free* (higher = safer).
-  - green ≥ 25 % free · amber 10–25 · red < 10
+  Monitor plots as "Memory Pressure". The gauge shows **% free** (higher =
+  safer); the chart and bar plot **pressure** (100 − free) and grow as memory
+  pressure grows, btop-meter style.
+  - colour everywhere derives from pressure: green low · amber mid · red high
 - **SWAP** — swap usage as % of total swap size, with used/total in GB.
 - **TOP RSS** — the five largest processes by resident memory.
 
@@ -52,6 +54,7 @@ macOS-specific (`memory_pressure`, `vm.swapusage`, `vm.loadavg`).
 memwatch            # run it
 MW_COLS=56 memwatch # force width (useful for testing phone layouts)
 MW_ASCII=1 memwatch # plain-ASCII sparklines, for terminals whose font lacks braille
+MW_SMOOTH=0 memwatch# disable the display smoothing (EMA) on chart geometry
 ```
 
 ### tmux

@@ -1,21 +1,25 @@
 #!/bin/zsh
-# memwatch v4.1 — btop-style braille memory monitor (Shadow, 2026-10-21)
+# memwatch v4.3 — btop-style braille memory monitor (Shadow, 2026-10-21)
 #
-#   v4.1 changes:
-#   - 256-colour value ramps: chart + bar colour is a continuous
-#     red→amber→green gradient mapped from the value (v/10 index), not 3
-#     flat tiers. Bars get a btop-style gradient fill: dark shade → bright
-#     tip along the bar length, bold last cell.
-#   - Braille graphs go two-edge: each cell spans prev→current sample
-#     (left dot column = prev height, right = current), so transitions
-#     land on single dots — real peaks, 2× horizontal resolution, btop look.
-#   - Charts framed with dim box-drawing (│ left rail, ╰─── base rule).
-#   - History: MW_ASCII=1 → ASCII sparkline fallback. MW_COLS=n force width.
-#   - v4 history: braille emitted as RAW UTF-8 BYTES (zsh printf "\uXXXX"
-#     fails under non-UTF-8 locales: "character not in range" — that was the
-#     v2 "?" bug, not the phone font). Width from stty (tput lies in tmux).
-#   - TOP: phys_footprint (Activity-Monitor Memory) alongside RSS, sorted by
-#     footprint, top-N fills the screen.
+#   v4.3 changes (feedback round 2):
+#   - Pressure chart plots PRESSURE (100 - free), fill-up semantics like a
+#     btop meter: graph grows as memory pressure grows. Gauge text still
+#     shows "% free" (raw), gauge bar still grows with pressure.
+#   - ONE colour semantic everywhere: colour = f(pressure). Gauge value,
+#     gauge bar, and every chart cell derive from the same used-ramp
+#     (RAMP_S), coloured from the RAW sample (not the EMA) so the chart's
+#     right edge always matches the gauge exactly.
+#   - v4.2: dot-order tables bottom-anchored (PAIR k=1 → dots 7,8); footer
+#     ≤56 cols + trailing newline stripped (title was scrolling off); rail
+#     aligned to ╰; display EMA for chart geometry (MW_SMOOTH=0 disables).
+#   - v4.1: 256-colour value ramps, gradient bar fills (dark→bright, bold
+#     tip), two-edge interpolated braille (prev→current per cell = single
+#     dot peaks), framed charts (│ rail, ╰── rule).
+#   - v4: braille as RAW UTF-8 BYTES (zsh printf "\uXXXX" fails under
+#     non-UTF-8 locales — that was the v2 "?" bug, not the phone font).
+#     Width from stty (tput lies in tmux). TOP = phys_footprint + RSS,
+#     sorted by footprint, fills the screen.
+#   - MW_ASCII=1 → ASCII sparkline fallback · MW_COLS=n → force width.
 
 INTERVAL=2
 
@@ -35,12 +39,10 @@ done
 # dot columns per band row k=1..4 BOTTOM→TOP: left dots (7,3,2,1), right (8,6,5,4)
 LBIT=(64 4 2 1); RBIT=(128 32 16 8); PAIR=(192 36 18 9)
 
-# value ramps: index = v/10 (0..10). pressure plots free %, swap used %.
-RP_RAW=(196 196 202 208 214 220 190 118 82 46 46)
+# pressure ramp: index = pressure/10 (0..10). green low → red high.
 RS_RAW=(46 46 82 118 190 220 214 208 202 196 196)
-typeset -a RAMP_P RAMP_S
+typeset -a RAMP_S
 for ((i = 0; i <= 10; i++)); do
-  RAMP_P[i+1]=$'\e[38;5;'"$((RP_RAW[i+1]))"'m'
   RAMP_S[i+1]=$'\e[38;5;'"$((RS_RAW[i+1]))"'m'
 done
 # bar gradient ladders, dark → bright (5 stops), pre-baked SGR strings
@@ -52,37 +54,32 @@ for ((i = 1; i <= 5; i++)); do
   LAD_R[i]=$'\e[38;5;'"$((GR_R[i]))"'m'
 done
 
-rampcol() { # $1=value 0-100, $2=RAMP array name -> SGR on stdout
+rampcol() { # $1=pressure 0-100 -> SGR on stdout
   local i=$(( $1 / 10 )); ((i < 0)) && i=0; ((i > 10)) && i=10
-  eval "print -r -- \"\${$2[i+1]}\""
+  print -r -- "${RAMP_S[i+1]}"
 }
-ladderfor() { # $1=value, $2=mode(P/S) -> ladder array name on stdout
-  if [[ $2 == P ]]; then
-    (( $1 < 10 )) && { print -r -- LAD_R; return; }
-    (( $1 < 25 )) && { print -r -- LAD_Y; return; }
-    print -r -- LAD_G
-  else
-    (( $1 > 80 )) && { print -r -- LAD_R; return; }
-    (( $1 > 55 )) && { print -r -- LAD_Y; return; }
-    print -r -- LAD_G
-  fi
+ladderfor() { # $1=pressure 0-100 -> ladder array name on stdout
+  if (( $1 > 80 )); then print -r -- LAD_R
+  elif (( $1 > 55 )); then print -r -- LAD_Y
+  else print -r -- LAD_G; fi
 }
 
 rep() { REP=""; local i; for ((i = 0; i < $2; i++)); do REP+=$1; done }
 
-framed() { # $1 = multi-line chart content -> FRAMED (dim rail on every line)
+framed() { # $1 = multi-line chart content -> FRAMED (dim rail on every line,
+  # indented to col 2 so it lines up with the ╰ base rule)
   FRAMED=""
   local row
   while IFS= read -r row; do FRAMED+=" ${C_DIM}│${R}${row}"$'\n'; done <<< "$1"
 }
 
-bar() { # $1 fill% (0-100), $2=value, $3=mode, $4=len -> global BARSTR
-  local f=${1:-0}; local n=${4:-16}
+bar() { # $1 fill% (0-100), $2=pressure (colour), $3=len -> global BARSTR
+  local f=${1:-0}; local n=${3:-16}
   [[ "$f" == <-> ]] || f=0
   (( f < 0 )) && f=0; (( f > 100 )) && f=100
   local fr=$(( (f * n + 50) / 100 )); ((fr > n)) && fr=n
   local e=$(( n - fr ))
-  local lad; eval "lad=(\"\${(@)$(ladderfor $2 $3)}\")"
+  local lad; eval "lad=(\"\${(@)$(ladderfor $2)}\")"
   BARSTR=""
   local i
   for ((i = 1; i <= fr; i++)); do
@@ -97,15 +94,16 @@ bar() { # $1 fill% (0-100), $2=value, $3=mode, $4=len -> global BARSTR
   if ((e > 0)); then rep '░' $e; BARSTR+="${C_BARBG}${REP}${R}"; fi
 }
 
-chart() { # $1=array $2=mode(P/S) $3=rows $4=width -> CHART ($3 lines)
-  local -a s; eval "s=(\"\${(@)$1}\")"
-  local mode=$2 rows=$3 width=$4
+chart() { # $1=plot array (pressure, fill-up) $2=colour-src array (raw)
+  #          $3=rows $4=width -> CHART ($3 lines)
+  local -a s cs; eval "s=(\"\${(@)$1}\")"; eval "cs=(\"\${(@)$2}\")"
+  local rows=$3 width=$4
   local n=${#s}
-  if (( n > width )); then s=("${s[-width,-1]}"); n=$width; fi
+  if (( n > width )); then s=("${s[-width,-1]}"); cs=("${cs[-width,-1]}"); n=$width; fi
   local off=$((width - n)); ((off < 0)) && off=0
   local T=$((rows * 4)) T2=$((rows - 1))
-  local c v0 v1 h0 h1 fill f bits k kl kr r
-  local line run runcol col
+  local c v0 v1 h0 h1 fill bits k kl kr r col
+  local line run runcol
   CHART=""
   for ((r = 0; r < rows; r++)); do
     line=""
@@ -129,7 +127,7 @@ chart() { # $1=array $2=mode(P/S) $3=rows $4=width -> CHART ($3 lines)
         elif ((kl)); then bits=$((bits + LBIT[k]))
         elif ((kr)); then bits=$((bits + RBIT[k])); fi
       done
-      col=$(rampcol $v1 $([[ $mode == P ]] && print RAMP_P || print RAMP_S))
+      col=$(rampcol $((100 - ${cs[ci]:-0})))
       if [[ -n "$runcol" && "$col" != "$runcol" ]]; then
         line+="${runcol}${run}${R}"; run=""
       fi
@@ -140,16 +138,16 @@ chart() { # $1=array $2=mode(P/S) $3=rows $4=width -> CHART ($3 lines)
   done
 }
 
-sparkline() { # ASCII fallback: $1=array name, $2=mode, $3=cells
-  local -a s; eval "s=(\"\${(@)$1}\")"
-  local mode=$2 need=$3
+sparkline() { # ASCII fallback: $1=plot array $2=colour-src array $3=cells
+  local -a s cs; eval "s=(\"\${(@)$1}\")"; eval "cs=(\"\${(@)$2}\")"
+  local need=$3
   local n=${#s}
   local off=$((need - n)); ((off < 0)) && off=0
-  local out="" i idx v
+  local out="" i idx p
   for ((i = 0; i < need; i++)); do
     if ((i < off)); then out+=" "; continue; fi
-    idx=$((i - off + 1)); v=${s[idx]}
-    out+="$(rampcol $v $([[ $mode == P ]] && print RAMP_P || print RAMP_S))${SKCH[$((v * 7 / 100 + 1))]}"
+    idx=$((i - off + 1)); p=${s[idx]:-0}
+    out+="$(rampcol $((100 - ${cs[idx]:-0})))${SKCH[$((p * 7 / 100 + 1))]}"
   done
   CHART="${out}"$'\n'
 }
@@ -160,7 +158,7 @@ while true; do
   [[ -z "$LINES" ]] && LINES=24
   [ -n "$MW_COLS" ] && COLS=$MW_COLS
   CW=$((COLS - 2))
-  chartw=$((CW - 2))   # framed charts: │ + content must end where gauges end
+  chartw=$((CW - 2))   # framed charts: " │" + content must end where gauges end
 
   pf=$(memory_pressure -Q 2>/dev/null | grep -oE '[0-9]+%' | tail -1 | tr -d '%')
   [[ "$pf" == <-> ]] || pf=50
@@ -179,9 +177,18 @@ while true; do
   histP+=($pf); histS+=($sf)
   while (( ${#histP} > chartw )); do histP=(${histP[2,-1]}); histS=(${histS[2,-1]}); done
 
-  # display EMA (light smoothing for the CHARTS only; gauge/min/max/avg stay
-  # raw). kernel free-memory jitter sawtooths between samples — even a
-  # correct plot looks like chaos without it. MW_SMOOTH=0 disables.
+  mn=100 mx=0 sm=0 c=0
+  for v in "${(@)histP}"; do ((v<mn))&&mn=$v; ((v>mx))&&mx=$v; sm=$((sm+v)); c=$((c+1)); done
+  av=$(( c > 0 ? sm / c : 50 ))
+  smin=100 smax=0
+  for v in "${(@)histS}"; do ((v<smin))&&smin=$v; ((v>smax))&&smax=$v; done
+
+  winsec=$(( ${#histP} * INTERVAL ))
+  la=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | xargs)
+  now=$(date '+%a %d %b %H:%M:%S')
+
+  # display EMA for chart GEOMETRY only (MW_SMOOTH=0 disables); gauge and
+  # stats stay raw. Then invert: charts plot PRESSURE = 100 - free.
   if [[ "$MW_SMOOTH" != 0 ]]; then
     shP=(); prev=-1
     for v in "${(@)histP}"; do
@@ -196,31 +203,25 @@ while true; do
   else
     shP=("${(@)histP}"); shS=("${(@)histS}")
   fi
-
-  mn=100 mx=0 sm=0 c=0
-  for v in "${(@)histP}"; do ((v<mn))&&mn=$v; ((v>mx))&&mx=$v; sm=$((sm+v)); c=$((c+1)); done
-  av=$(( c > 0 ? sm / c : 50 ))
-  smin=100 smax=0
-  for v in "${(@)histS}"; do ((v<smin))&&smin=$v; ((v>smax))&&smax=$v; done
-
-  winsec=$(( ${#histP} * INTERVAL ))
-  la=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | xargs)
-  now=$(date '+%a %d %b %H:%M:%S')
+  pP=(); for v in "${(@)shP}"; do pP+=($((100 - v))); done   # pressure (used)
+  pS=("${(@)shS}")                                            # swap already used
+  cP=("${(@)histP}")                                          # colour from RAW free
+  cS=(); for v in "${(@)histS}"; do cS+=($((100 - v))); done  # colour src: 100-used
 
   barlen=$((COLS - 40)); ((barlen < 8)) && barlen=8; ((barlen > 36)) && barlen=36
-  bar "$((100 - pf))" "$pf" P "$barlen"; pbar=$BARSTR
-  bar "$sf" "$sf" S "$barlen";          sbar=$BARSTR
+  bar "$((100 - pf))" "$((100 - pf))" "$barlen"; pbar=$BARSTR
+  bar "$sf" "$sf" "$barlen";          sbar=$BARSTR
 
   P_ROWS=4 S_ROWS=2
   ((LINES < 21)) && { P_ROWS=3; S_ROWS=2 }
   ((LINES < 18)) && { P_ROWS=2; S_ROWS=1 }
 
   if [[ "$MW_ASCII" == 1 ]]; then
-    sparkline shP P "$chartw"; chartP=${CHART%$'\n'}
-    sparkline shS S "$chartw"; chartS=${CHART%$'\n'}
+    sparkline pP cP "$chartw"; chartP=${CHART%$'\n'}
+    sparkline pS cS "$chartw"; chartS=${CHART%$'\n'}
   else
-    chart shP P "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
-    chart shS S "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
+    chart pP cP "$P_ROWS" "$chartw"; chartP=${CHART%$'\n'}
+    chart pS cS "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
   fi
 
   rl=$((COLS - 12 - ${#now} - 2)); ((rl < 0)) && rl=0
@@ -229,14 +230,14 @@ while true; do
 
   out=$'\e[H\e[2J'
   out+=" ${C_ACC}${BL}◆ MEMORY${R} ${C_DIM}${RULE}${R} ${now}"$'\n'$'\n'
-  out+=" ${C_TXT}${BL}$(printf '%-9s' PRESSURE)${R} $(rampcol $pf RAMP_P)${BL}$(printf '%-11s' "${pf}% free")${R} [${pbar}] ${C_DIM}${mn}-${mx} avg ${av}${R}"$'\n'
+  out+=" ${C_TXT}${BL}$(printf '%-9s' PRESSURE)${R} $(rampcol $((100 - pf)))${BL}$(printf '%-11s' "${pf}% free")${R} [${pbar}] ${C_DIM}${mn}-${mx} avg ${av}${R}"$'\n'
   if [[ "$MW_ASCII" == 1 ]]; then
     out+=" $chartP"$'\n'
   else
     framed "$chartP"; out+="$FRAMED"
     out+=" ${C_DIM}╰${HRULE}${R}"$'\n'
   fi
-  out+=" ${C_TXT}${BL}$(printf '%-9s' SWAP)${R} $(rampcol $sf RAMP_S)${BL}$(printf '%-11s' "$swaplab")${R} [${sbar}] ${C_DIM}${smin}-${smax}%${R}"$'\n'
+  out+=" ${C_TXT}${BL}$(printf '%-9s' SWAP)${R} $(rampcol $sf)${BL}$(printf '%-11s' "$swaplab")${R} [${sbar}] ${C_DIM}${smin}-${smax}%${R}"$'\n'
   if [[ "$MW_ASCII" == 1 ]]; then
     out+=" $chartS"$'\n'
   else
@@ -244,7 +245,7 @@ while true; do
     out+=" ${C_DIM}╰${HRULE}${R}"$'\n'
   fi
   out+=" ${C_DIM}last ${winsec}s · 2s/sample · load ${la}${R}"$'\n'
-  out+=" ${C_DIM}pressure = free % · swap = used % · MW_ASCII=1 = ascii${R}"$'\n'$'\n'
+  out+=" ${C_DIM}gauge % free · charts = pressure · MW_ASCII=1 = ascii${R}"$'\n'$'\n'
 
   # TOP: fill remaining screen with top-N processes by phys_footprint (total),
   # showing RSS alongside. footprint = Activity Monitor's Memory column —
