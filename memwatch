@@ -16,6 +16,8 @@
 #   - TOP: phys_footprint alongside RSS, sorted by footprint.
 
 INTERVAL=2
+GWLOG=/Users/oliver/Library/Logs/openclaw/gateway.log
+INFMAP=~/.cache/memwatch-infer.map
 
 typeset -a histP histS
 histP=() histS=()
@@ -67,6 +69,47 @@ framed() { # $1 = multi-line chart content -> FRAMED (dim rail on every line)
   FRAMED=""
   local row
   while IFS= read -r row; do FRAMED+=" ${C_DIM}│${R}${row}"$'\n'; done <<< "$1"
+}
+
+attribute() { # $1 = in_flight_started_s (epoch) -> OpenClaw sessionKey via
+  # timing join: the mtplx request start ≈ T, the owning turn is the turn
+  # whose sessionKey milestone immediately precedes that fetch in gateway.log
+  # (skip [exec] lines — our own greps get logged and pollute the patterns)
+  tail -c 400000 "$GWLOG" 2>/dev/null | python3 -c '
+import sys, re, datetime
+t = float(sys.argv[1])
+skeys = []
+fetches = []
+pat = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+)([+-]\d\d:\d\d) ")
+keypat = re.compile(r"^agent:[A-Za-z0-9:_-]+$")
+for line in sys.stdin:
+    m = pat.match(line)
+    if not m:
+        continue
+    try:
+        ts = datetime.datetime.fromisoformat(m.group(1) + m.group(2)).timestamp()
+    except Exception:
+        continue
+    if ts > t + 1:
+        continue
+    if "[exec]" in line:
+        continue
+    if "[provider-transport-fetch] [model-fetch] start" in line and "provider=mtplx" in line:
+        fetches.append(ts)
+    sm = re.search(r"sessionKey=(\S+)", line)
+    if sm and keypat.match(sm.group(1)):
+        skeys.append((ts, sm.group(1)))
+if not fetches:
+    sys.exit(0)
+f = max(fetches)
+cands = [x for x in skeys if x[0] <= f + 2]
+if not cands:
+    sys.exit(0)
+ts, key = max(cands, key=lambda x: x[0])
+if f - ts > 600:
+    sys.exit(0)
+print(key)
+' "$1" 2>/dev/null
 }
 
 bar() { # $1 fill% (0-100), $2=used-level (colour), $3=len -> global BARSTR
@@ -220,6 +263,76 @@ while true; do
     chart shS histS "$S_ROWS" "$chartw"; chartS=${CHART%$'\n'}
   fi
 
+  # INFERENCE panel: live mtplx sessions via llama-swap upstreams
+  # (:5801 optimized, :5800 bare). Attribution via timing join, cached in
+  # $INFMAP so each session is resolved once against gateway.log.
+  mkdir -p ~/.cache
+  typeset -a inf_all
+  inf_all=()
+  INF_UP=0
+  for port in 5801 5800; do
+    resp=$(curl -s -m 1 "http://127.0.0.1:$port/admin/sessions" 2>/dev/null)
+    [[ -z "$resp" ]] && continue
+    INF_UP=$((INF_UP + 1))
+    parsed=$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for s in d.get("sessions", []):
+    print("\t".join(str(x) for x in [
+        s.get("session_id", "?"),
+        1 if s.get("in_flight") else 0,
+        s.get("in_flight_started_s") or 0,
+        s.get("prefix_len") or 0,
+        len(s.get("turn_prompt_lens") or []),
+        s.get("last_access_s") or 0,
+    ]))
+' 2>/dev/null)
+    while IFS=$'\t' read -r sid infl tstart pfx nturns lastacc; do
+      [[ -z "$sid" ]] && continue
+      inf_all+=("$port|$sid|$infl|$tstart|$pfx|$nturns|$lastacc")
+    done <<< "$parsed"
+  done
+
+  INF_N=0; INF_ACT=0
+  INF_ROWS=""
+  if (( ${#inf_all} )); then
+    sorted=$(printf '%s\n' "${(@)inf_all}" | sort -t'|' -k3,3r -k7,7nr | head -4)
+    now_s=$(date +%s)
+    while IFS='|' read -r port sid infl tstart pfx nturns lastacc; do
+      [[ -z "$sid" ]] && continue
+      label=$(grep "^$sid|" "$INFMAP" 2>/dev/null | tail -1 | cut -d'|' -f2)
+      if [[ -z "$label" && "$infl" == 1 ]]; then
+        label=$(attribute "$tstart")
+        if [[ -n "$label" ]]; then
+          printf '%s|%s|%s\n' "$sid" "$label" "$now_s" >> "$INFMAP"
+        fi
+      fi
+      [[ -z "$label" ]] && label="unattributed"
+      label=${label#agent:}
+      label=$(print -r -- "$label" | sed -E 's/([0-9a-f]{8})-[0-9a-f-]+/\1/g')
+      label=${label%%[[:space:]]*}; label=${label:0:24}
+      pfxk=$(( ${pfx:-0} / 1000 ))
+      if (( infl == 1 )); then
+        dur=$(( now_s - ${tstart%%.*} )); ((dur < 0)) && dur=0
+        INF_ROWS+=" ${C_ACC}${BL}●${R} ${C_DIM}${sid:5:8}${R} ${C_TXT}${label}${R} ${C_DIM}${pfxk}k ${nturns}t · live $((dur / 60))m$((dur % 60))s${R}"$'\n'
+        INF_ACT=$((INF_ACT + 1))
+      else
+        age=$(( now_s - ${lastacc%%.*} )); ((age < 0)) && age=0
+        INF_ROWS+="   ${C_DIM}${sid:5:8} ${label} ${pfxk}k ${nturns}t · $((age / 60))m ago${R}"$'\n'
+      fi
+      INF_N=$((INF_N + 1))
+    done <<< "$sorted"
+  fi
+  if (( INF_UP == 0 )); then
+    INF_HDR=" ${C_DIM}INFERENCE · no mtplx servers up${R}"
+  else
+    INF_HDR=" ${C_ACC}${BL}INFERENCE${R} ${C_DIM}${INF_ACT} active · ${INF_N} session(s) · ${INF_UP} server(s) up${R}"
+  fi
+  INF_LINES=$(( INF_N > 0 ? INF_N + 1 : 1 ))
+
   rl=$((COLS - 12 - ${#now} - 2)); ((rl < 0)) && rl=0
   rep '─' $rl; RULE=$REP
   rep '─' $chartw; HRULE=$REP
@@ -240,13 +353,15 @@ while true; do
     framed "$chartS"; out+="$FRAMED"
     out+=" ${C_DIM}╰${HRULE}${R}"$'\n'
   fi
+  out+="$INF_HDR"$'\n'
+  out+="$INF_ROWS"
   out+=" ${C_DIM}last ${winsec}s · 2s/sample · load ${la}${R}"$'\n'
   out+=" ${C_DIM}charts = pressure · taller = worse · label = % free${R}"$'\n'$'\n'
 
   # TOP: fill remaining screen with top-N processes by phys_footprint (total),
   # showing RSS alongside. footprint = Activity Monitor's Memory column —
   # catches big-foots whose RSS lies (e.g. GPU/wired dirty pages in swap).
-  TOP_N=$((LINES - 12 - P_ROWS - S_ROWS)); ((TOP_N < 5)) && TOP_N=5
+  TOP_N=$((LINES - 12 - P_ROWS - S_ROWS - INF_LINES)); ((TOP_N < 5)) && TOP_N=5
 
   typeset -A PRSS PNAME
   PRSS=() PNAME=()
