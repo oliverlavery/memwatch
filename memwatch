@@ -77,7 +77,7 @@ attribute() { # $1 = in_flight_started_s (epoch) -> OpenClaw sessionKey.
   # throughout a turn): the owner is the turn whose milestone immediately
   # precedes the dispatch. [exec] lines skipped — our own greps get logged
   # and pollute the patterns.
-  tail -c 400000 "$GWLOG" 2>/dev/null | python3 -c '
+  tail -c 1500000 "$GWLOG" 2>/dev/null | python3 -c '
 import sys, re, datetime
 t = float(sys.argv[1])
 skeys = []
