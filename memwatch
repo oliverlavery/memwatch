@@ -25,7 +25,7 @@ typeset -a histP histS
 histP=() histS=()
 
 R=$'\e[0m'; BL=$'\e[1m'
-C_DIM=$'\e[38;5;243m'; C_TXT=$'\e[38;5;252m'; C_ACC=$'\e[38;5;51m'
+C_DIM=$'\e[38;5;243m'; C_TXT=$'\e[38;5;252m'; C_ACC=$'\e[38;5;51m'; C_GRN=$'\e[38;5;41m'; C_AMB=$'\e[38;5;214m'
 C_BARBG=$'\e[38;5;238m'
 SKCH=('.' '.' ':' '-' '=' '+' '*' '#')   # ASCII fallback ramp
 
@@ -386,7 +386,9 @@ while true; do
     mname=$(curl -s -m 1 "http://127.0.0.1:$port/health" 2>/dev/null | grep -o '"model": *"[^"]*"' | head -1 | cut -d'"' -f4)
     mshort=${mname#mtplx-flash-next-}; mshort=${mshort%%-*}
     [[ -z "$mshort" || "$mshort" == "$mname" ]] && mshort=$([[ $port == 5801 ]] && echo opt || echo bare)
-    UPMODELS+="${mshort}+"
+    # lane badge: optimized/green, bare/amber (back to C_DIM so '·'/'up' stay dim)
+    if [[ "$mshort" == *"opt"* ]]; then UPMODELS+="${C_GRN}${mshort}${C_DIM}+"
+    else UPMODELS+="${C_AMB}${mshort}${C_DIM}"; fi
     parsed=$(printf '%s' "$resp" | python3 -c '
 import json, sys
 try:
